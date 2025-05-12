@@ -205,7 +205,15 @@ public class VoteScoreboard {
      * Updates a player's scoreboard with current vote counts.
      */
     private void updateScoreboard(Player player, List<String> options, int[] counts) {
+        if (!player.isOnline()) return;
+
+        // Make copies of the data to prevent race conditions
+        final List<String> optionsCopy = new ArrayList<>(options);
+        final int[] countsCopy = counts.clone();
+
         Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline()) return; // Check again after scheduler delay
+
             UUID playerId = player.getUniqueId();
             if (!playerBoards.containsKey(playerId)) return;
 
@@ -215,14 +223,14 @@ public class VoteScoreboard {
 
             // Find highest vote count for highlighting
             int maxVotes = 0;
-            for (int count : counts) {
+            for (int count : countsCopy) {
                 if (count > maxVotes) {
                     maxVotes = count;
                 }
             }
 
             // Only highlight winners if voting has ended
-            setScores(board, objective, options, counts, votingEnded.get() ? maxVotes : 0);
+            setScores(board, objective, optionsCopy, countsCopy, votingEnded.get() ? maxVotes : 0);
         });
     }
 
@@ -330,20 +338,32 @@ public class VoteScoreboard {
      */
     public void hideScoreboard(Player player) {
         UUID playerId = player.getUniqueId();
+        hideScoreboardById(playerId, player);
+    }
 
+    /**
+     * Hides a scoreboard by player UUID, handling both online and offline players.
+     */
+    private void hideScoreboardById(UUID playerId, Player player) {
         // Cancel update task
         if (playerUpdateTasks.containsKey(playerId)) {
-            Bukkit.getScheduler().cancelTask(playerUpdateTasks.get(playerId));
+            try {
+                Bukkit.getScheduler().cancelTask(playerUpdateTasks.get(playerId));
+            } catch (Exception e) {
+                // Ignore errors from task cancellation
+            }
             playerUpdateTasks.remove(playerId);
         }
 
         // Remove from time tracking
         remainingTimeMap.remove(playerId);
 
-        // Reset to main scoreboard
-        ScoreboardManager manager = Bukkit.getScoreboardManager();
-        if (manager != null) {
-            player.setScoreboard(manager.getMainScoreboard());
+        // Reset to main scoreboard if player is online
+        if (player != null && player.isOnline()) {
+            ScoreboardManager manager = Bukkit.getScoreboardManager();
+            if (manager != null) {
+                player.setScoreboard(manager.getMainScoreboard());
+            }
         }
 
         playerBoards.remove(playerId);
@@ -361,14 +381,17 @@ public class VoteScoreboard {
 
         for (UUID playerId : playerIds) {
             Player player = Bukkit.getPlayer(playerId);
-            if (player != null && player.isOnline()) {
-                hideScoreboard(player);
-            }
+            // Clean up for both online and offline players
+            hideScoreboardById(playerId, player);
         }
 
         // Cancel all update tasks
-        for (Integer taskId : playerUpdateTasks.values()) {
-            Bukkit.getScheduler().cancelTask(taskId);
+        for (Integer taskId : new ArrayList<>(playerUpdateTasks.values())) {
+            try {
+                Bukkit.getScheduler().cancelTask(taskId);
+            } catch (Exception e) {
+                // Ignore errors from task cancellation
+            }
         }
 
         playerUpdateTasks.clear();

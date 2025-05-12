@@ -99,17 +99,35 @@ public class TwitchVoteSession {
         try {
             if (twitchClient != null) {
                 try {
-                    twitchClient.getChat().leaveChannel(channel);
-                    twitchClient.close();
+                    // First attempt to leave channel
+                    try {
+                        twitchClient.getChat().leaveChannel(channel);
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("Error leaving Twitch channel: " + e.getMessage());
+                        // Continue with cleanup even if leaving fails
+                    }
+
+                    // Then close the client
+                    try {
+                        twitchClient.close();
+                    } catch (Exception e) {
+                        plugin.getLogger().severe("Error closing Twitch client: " + e.getMessage());
+                        // Continue with cleanup even if close fails
+                    }
+
                     plugin.getLogger().info("Disconnected from Twitch channel: " + channel);
-                } catch (Exception e) {
-                    plugin.getLogger().severe("Error disconnecting from Twitch: " + e.getMessage());
+                } finally {
+                    // Ensure client is nulled out even if exceptions occur
+                    twitchClient = null;
                 }
-                twitchClient = null;
             }
         } finally {
+            // Always unlock, even if any exceptions occur during cleanup
             clientLock.writeLock().unlock();
         }
+
+        // Clear votes after connection is closed
+        clearVotes();
     }
 
     /**

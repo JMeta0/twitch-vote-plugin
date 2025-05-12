@@ -5,12 +5,18 @@ import org.bukkit.command.PluginCommand;
 import org.bukkit.command.BlockCommandSender;
 import org.bukkit.permissions.Permission;
 import org.bukkit.permissions.PermissionDefault;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import java.io.File;
 
 /**
  * Main plugin class for TwitchVoting, handles configuration and initialization.
  */
-public class TwitchVotingPlugin extends JavaPlugin {
+public class TwitchVotingPlugin extends JavaPlugin implements Listener {
     private VoteCommandExecutor voteExecutor;
     private VoteScoreboard voteScoreboard;
     private boolean useScoreboard = true; // Default value
@@ -58,7 +64,51 @@ public class TwitchVotingPlugin extends JavaPlugin {
             this.getServer().getPluginManager().disablePlugin(this);
             return;
         }
+
+        // Register event listeners
+        getServer().getPluginManager().registerEvents(this, this);
+
         getLogger().info("TwitchVoting enabled.");
+    }
+
+    // Event handlers for player tracking
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        // Clean up scoreboard when player disconnects
+        if (voteScoreboard != null) {
+            voteScoreboard.hideScoreboard(event.getPlayer());
+        }
+    }
+
+    @EventHandler
+    public void onPlayerChangeWorld(PlayerChangedWorldEvent event) {
+        // Handle player changing worlds - if the vote is in a specific world
+        if (voteExecutor != null && voteExecutor.isVoteActive()) {
+            Player player = event.getPlayer();
+            String voteWorld = voteExecutor.getVoteWorldName();
+
+            // If the player is leaving the vote world, hide scoreboard
+            if (voteWorld != null && event.getFrom().getName().equals(voteWorld)) {
+                voteScoreboard.hideScoreboard(player);
+            }
+            // If the player is entering the vote world, show scoreboard
+            else if (voteWorld != null && player.getWorld().getName().equals(voteWorld)) {
+                voteExecutor.showScoreboardToPlayer(player);
+            }
+        }
+    }
+
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        // Show scoreboard to newly joined players if vote is active in their world
+        if (voteExecutor != null && voteExecutor.isVoteActive()) {
+            Player player = event.getPlayer();
+            String voteWorld = voteExecutor.getVoteWorldName();
+
+            if (voteWorld != null && player.getWorld().getName().equals(voteWorld)) {
+                voteExecutor.showScoreboardToPlayer(player);
+            }
+        }
     }
 
     @Override

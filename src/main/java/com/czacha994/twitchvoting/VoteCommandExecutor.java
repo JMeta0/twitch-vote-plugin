@@ -32,6 +32,10 @@ public class VoteCommandExecutor implements CommandExecutor {
     private int remainingSeconds = 0;
     private BukkitTask countdownTask = null;
 
+    // Track result display tasks separately
+    private List<BukkitTask> resultDisplayTasks = new ArrayList<>();
+    private boolean showingResults = false;
+
     /**
      * Creates a new vote command executor.
      *
@@ -131,6 +135,16 @@ public class VoteCommandExecutor implements CommandExecutor {
             return true;
         }
 
+        // If showing results from a previous vote, clean those up first
+        if (showingResults) {
+            cleanupResultTasks();
+            // Also make sure scoreboard results are removed
+            plugin.getVoteScoreboard().hideAllScoreboards();
+        }
+
+        // Ensure any previous timers are fully cancelled
+        cleanupTasks();
+
         // Store vote session data
         this.voteStarterUuid = starterUuid;  // May be null for command blocks
         this.voteWorldName = worldName;
@@ -169,11 +183,53 @@ public class VoteCommandExecutor implements CommandExecutor {
                 }
 
                 // Set up automatic vote ending
+                if (stopTask != null) {
+                    stopTask.cancel();
+                }
                 stopTask = Bukkit.getScheduler().runTaskLater(plugin, this::stopVote, seconds * 20L);
             });
         });
 
         return true;
+    }
+
+    /**
+     * Cleans up all tasks associated with vote timing
+     */
+    private void cleanupTasks() {
+        // Cancel any existing countdown task
+        if (countdownTask != null) {
+            countdownTask.cancel();
+            countdownTask = null;
+        }
+
+        // Cancel any existing stop task
+        if (stopTask != null) {
+            stopTask.cancel();
+            stopTask = null;
+        }
+
+        // Cancel any existing update task
+        if (updateTask != null) {
+            updateTask.cancel();
+            updateTask = null;
+        }
+    }
+
+    /**
+     * Cleans up result display tasks
+     */
+    private void cleanupResultTasks() {
+        // Cancel any result display tasks
+        for (BukkitTask task : resultDisplayTasks) {
+            try {
+                task.cancel();
+            } catch (Exception e) {
+                // Ignore errors
+            }
+        }
+        resultDisplayTasks.clear();
+        showingResults = false;
     }
 
     /**
@@ -190,11 +246,15 @@ public class VoteCommandExecutor implements CommandExecutor {
             return true;
         }
 
-        // Stop the vote asynchronously
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+        // First inform the user that we're stopping
+        sender.sendMessage("§eStopping the vote...");
+
+        // Run on main thread to ensure proper synchronization
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            // Stop the vote and clean up
             stopVote();
-            Bukkit.getScheduler().runTask(plugin, () ->
-                sender.sendMessage("§aVoting session stopped."));
+            // Notify the sender once complete
+            sender.sendMessage("§aVoting session stopped.");
         });
 
         return true;
@@ -209,9 +269,33 @@ public class VoteCommandExecutor implements CommandExecutor {
             return true;
         }
 
+        // Check if a vote is currently running
+        boolean voteWasActive = false;
+        int remainingTimeBackup = 0;
+
+        if (currentSession != null) {
+            voteWasActive = true;
+            remainingTimeBackup = remainingSeconds;
+            sender.sendMessage("§eWARNING: A vote is in progress. Stopping it before reload.");
+
+            // Stop the vote - run synchronously since we're in the command thread
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                stopVote();
+                sender.sendMessage("§eVote stopped for configuration reload.");
+            });
+        }
+
         // Reload the plugin's configuration
         plugin.reloadConfig();
         sender.sendMessage("§aConfiguration reloaded successfully.");
+
+        // If a vote was active, inform the user it was stopped
+        if (voteWasActive) {
+            sender.sendMessage("§cThe active vote was stopped during config reload.");
+            sender.sendMessage("§eIt had " + remainingTimeBackup + " seconds remaining.");
+            sender.sendMessage("§eYou may start a new vote if needed.");
+        }
+
         return true;
     }
 
@@ -288,92 +372,85 @@ public class VoteCommandExecutor implements CommandExecutor {
      */
     private void stopVote() {
         if (currentSession != null) {
-            // Capture the final results before stopping the session
-            final int[] finalResults = currentSession.getVoteCounts();
-            final List<String> finalOptions = new ArrayList<>(voteOptions);
-            final String finalWorldName = voteWorldName;
+            // Create a local reference to prevent race conditions
+            TwitchVoteSession sessionToStop = currentSession;
 
-            // Disconnect from Twitch in async thread (we're already in async context)
-            currentSession.stop();
+            // First mark session as stopping to prevent new votes
+            synchronized (sessionToStop) {
+                // Capture the final results before stopping the session
+                final int[] finalResults = sessionToStop.getVoteCounts();
+                final List<String> finalOptions = new ArrayList<>(voteOptions);
+                final String finalWorldName = voteWorldName;
 
-            // Cancel any update tasks first to prevent interference
-            if (updateTask != null) {
-                updateTask.cancel();
-                updateTask = null;
-            }
+                // Disconnect from Twitch in async thread (we're already in async context)
+                sessionToStop.stop();
 
-            // Send results table and schedule cleanup on main thread
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                // Cancel countdown timer
-                if (countdownTask != null) {
-                    countdownTask.cancel();
-                    countdownTask = null;
-                }
+                // Send results table and schedule cleanup on main thread
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    // Cancel all scheduled tasks
+                    cleanupTasks();
 
-                // Display results based on current mode
-                if (plugin.isUsingScoreboard()) {
-                    // Show scoreboard results
-                    List<Player> worldPlayers = getPlayersInWorld(getWorld());
-                    plugin.getVoteScoreboard().showResults(finalOptions, finalResults, worldPlayers);
+                    // Clean up any previous result tasks just in case
+                    cleanupResultTasks();
 
-                    // Schedule scoreboards to be hidden after configured display time
-                    int displayTime = plugin.getConfig().getInt("display.results_display_time", 60);
-                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                        plugin.getVoteScoreboard().hideAllScoreboards();
-                        sendMessageToWorld("§eThe vote has ended.");
-                    }, displayTime * 20L);
-                } else {
-                    // Use chat display with the captured results
-                    displayChatResults(finalOptions, finalResults, finalWorldName);
+                    // Mark that we're showing results
+                    showingResults = true;
 
-                    // Remove table after configured display time
-                    int displayTime = plugin.getConfig().getInt("display.results_display_time", 60);
-                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                        clearVotingTable();
-                        sendMessageToWorld("§eThe vote has ended.");
-                    }, displayTime * 20L);
-                }
+                    // Display results based on current mode
+                    if (plugin.isUsingScoreboard()) {
+                        // Show scoreboard results
+                        List<Player> worldPlayers = getPlayersInWorld(getWorld());
+                        plugin.getVoteScoreboard().showResults(finalOptions, finalResults, worldPlayers);
 
-                // Cancel the scheduled tasks
-                if (stopTask != null) {
-                    stopTask.cancel();
-                    stopTask = null;
-                }
+                        // Schedule scoreboards to be hidden after configured display time
+                        int displayTime = plugin.getConfig().getInt("display.results_display_time", 60);
+                        BukkitTask hideTask = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                            plugin.getVoteScoreboard().hideAllScoreboards();
+                            sendMessageToWorld("§eThe vote has ended.");
+                            showingResults = false;
+                            resultDisplayTasks.clear();
+                        }, displayTime * 20L);
+                        resultDisplayTasks.add(hideTask);
+                    } else {
+                        // Use chat display with the captured results
+                        displayChatResults(finalOptions, finalResults, finalWorldName);
 
-                // Delay the final notification to show it after results are displayed
-                // For scoreboard mode, show immediately, for chat mode delay by a bit
-                if (plugin.isUsingScoreboard()) {
-                    sendMessageToWorld("§6§lThe vote has ended! Results are displayed.");
-                } else {
-                    // For chat mode, delay to ensure results are shown first
-                    // Delay is based on number of options (options + header + footer = options.size() + 5)
-                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                        // Remove table after configured display time
+                        int displayTime = plugin.getConfig().getInt("display.results_display_time", 60);
+                        BukkitTask hideTask = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                            clearVotingTable();
+                            sendMessageToWorld("§eThe vote has ended.");
+                            showingResults = false;
+                            resultDisplayTasks.clear();
+                        }, displayTime * 20L);
+                        resultDisplayTasks.add(hideTask);
+                    }
+
+                    // Delay the final notification to show it after results are displayed
+                    // For scoreboard mode, show immediately, for chat mode delay by a bit
+                    if (plugin.isUsingScoreboard()) {
                         sendMessageToWorld("§6§lThe vote has ended! Results are displayed.");
-                    }, finalOptions.size() + 6);
-                }
-            });
+                    } else {
+                        // For chat mode, delay to ensure results are shown first
+                        // Delay is based on number of options (options + header + footer = options.size() + 5)
+                        BukkitTask messageTask = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                            sendMessageToWorld("§6§lThe vote has ended! Results are displayed.");
+                        }, finalOptions.size() + 6);
+                        resultDisplayTasks.add(messageTask);
+                    }
+                });
+            }
 
             currentSession = null;
             voteStarterUuid = null;
             voteWorldName = null;
             voteOptions = null;
+            remainingSeconds = 0; // Reset the timer to prevent lingering timer state
+            totalSeconds = 0; // Also reset total seconds
         } else {
             // Handle case where tasks need to be cancelled but session is already null
             Bukkit.getScheduler().runTask(plugin, () -> {
-                if (stopTask != null) {
-                    stopTask.cancel();
-                    stopTask = null;
-                }
-
-                if (updateTask != null) {
-                    updateTask.cancel();
-                    updateTask = null;
-                }
-
-                if (countdownTask != null) {
-                    countdownTask.cancel();
-                    countdownTask = null;
-                }
+                cleanupTasks();
             });
         }
     }
@@ -383,6 +460,27 @@ public class VoteCommandExecutor implements CommandExecutor {
      */
     private void displayChatResults(List<String> options, int[] counts, String worldName) {
         if (options == null || worldName == null) return;
+        if (counts == null) {
+            plugin.getLogger().warning("Vote counts array is null when displaying results");
+            return;
+        }
+
+        // Ensure counts array is at least as long as options list
+        if (counts.length < options.size()) {
+            plugin.getLogger().warning("Vote counts array length mismatch: " + counts.length +
+                                      " counts for " + options.size() + " options");
+            // Create a new array with the correct length
+            int[] safeCounts = new int[options.size()];
+            // Copy existing values
+            System.arraycopy(counts, 0, safeCounts, 0, counts.length);
+            // Use the safe array instead
+            counts = safeCounts;
+        }
+
+        // Create final copies of parameters to use in lambda
+        final List<String> optionsFinal = new ArrayList<>(options);
+        final int[] countsFinal = counts.clone();
+        final String worldNameFinal = worldName;
 
         // Run on main thread to ensure proper message delivery
         Bukkit.getScheduler().runTask(plugin, () -> {
@@ -391,7 +489,7 @@ public class VoteCommandExecutor implements CommandExecutor {
 
             // Find highest vote count
             int maxVotes = 0;
-            for (int count : counts) {
+            for (int count : countsFinal) {
                 if (count > maxVotes) {
                     maxVotes = count;
                 }
@@ -408,13 +506,13 @@ public class VoteCommandExecutor implements CommandExecutor {
             messages.add(" ");  // Add empty line for better visibility
 
             // Option results with winner highlighted
-            for (int i = 0; i < options.size(); i++) {
+            for (int i = 0; i < optionsFinal.size(); i++) {
                 String line;
-                if (counts[i] == highestVote && highestVote > 0) {
+                if (countsFinal[i] == highestVote && highestVote > 0) {
                     // Highlight winning option(s) in purple with gold vote count
-                    line = "§d§l" + (i + 1) + ". §d§l" + options.get(i) + "    §6" + counts[i];
+                    line = "§d§l" + (i + 1) + ". §d§l" + optionsFinal.get(i) + "    §6" + countsFinal[i];
                 } else {
-                    line = "§b" + (i + 1) + ". §f" + options.get(i) + "    §a" + counts[i];
+                    line = "§b" + (i + 1) + ". §f" + optionsFinal.get(i) + "    §a" + countsFinal[i];
                 }
                 messages.add(line);
             }
@@ -424,7 +522,7 @@ public class VoteCommandExecutor implements CommandExecutor {
             messages.add("§6§l===================");
 
             // Send messages with a small delay to ensure correct order
-            World world = Bukkit.getWorld(worldName);
+            World world = Bukkit.getWorld(worldNameFinal);
             if (world != null) {
                 for (int i = 0; i < messages.size(); i++) {
                     final int index = i;
@@ -500,11 +598,14 @@ public class VoteCommandExecutor implements CommandExecutor {
             World world = getWorld();
             if (world == null) return;
 
+            // Store final reference for use in lambda
+            final World worldFinal = world;
+
             // Send multiple empty lines with small delays to ensure proper visual separation
             for (int i = 0; i < 5; i++) {
                 final int index = i;
                 Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                    forEachPlayerInWorld(world, player -> {
+                    forEachPlayerInWorld(worldFinal, player -> {
                         player.sendMessage(" ");
                     });
                 }, index);
@@ -569,6 +670,9 @@ public class VoteCommandExecutor implements CommandExecutor {
     public void shutdown() {
         plugin.getLogger().info("Shutting down vote executor...");
 
+        // Clean up result display tasks
+        cleanupResultTasks();
+
         // Hide all scoreboards if active
         plugin.getVoteScoreboard().hideAllScoreboards();
 
@@ -580,26 +684,15 @@ public class VoteCommandExecutor implements CommandExecutor {
                 currentSession.stop();
                 currentSession = null;
 
-                // Cancel any scheduled tasks
-                if (stopTask != null) {
-                    stopTask.cancel();
-                    stopTask = null;
-                }
-
-                if (updateTask != null) {
-                    updateTask.cancel();
-                    updateTask = null;
-                }
-
-                if (countdownTask != null) {
-                    countdownTask.cancel();
-                    countdownTask = null;
-                }
+                // Clean up all tasks
+                cleanupTasks();
 
                 // Clean up references
                 voteStarterUuid = null;
                 voteWorldName = null;
                 voteOptions = null;
+                totalSeconds = 0;
+                remainingSeconds = 0;
 
                 plugin.getLogger().info("Vote session stopped during shutdown.");
             } catch (Exception e) {
@@ -612,30 +705,70 @@ public class VoteCommandExecutor implements CommandExecutor {
      * Starts the countdown timer for the vote duration.
      */
     private void startCountdownTimer() {
+        plugin.getLogger().info("Starting countdown timer for " + totalSeconds + " seconds");
+
+        // Always cancel any existing countdown task first
         if (countdownTask != null) {
-            countdownTask.cancel();
+            try {
+                countdownTask.cancel();
+            } catch (Exception e) {
+                plugin.getLogger().warning("Error cancelling countdown task: " + e.getMessage());
+            }
+            countdownTask = null;
         }
 
+        // Ensure a fresh timer by explicitly resetting
         remainingSeconds = totalSeconds;
 
-        countdownTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            remainingSeconds--;
+        // Create the runnable first
+        Runnable countdownRunnable = new Runnable() {
+            @Override
+            public void run() {
+                // First check if we still have a valid session
+                if (currentSession == null) {
+                    // Vote has been stopped - cancel the timer
+                    if (countdownTask != null) {
+                        countdownTask.cancel();
+                        countdownTask = null;
+                    }
+                    return;
+                }
 
-            // Update scoreboards with new time if using scoreboard mode
-            if (plugin.isUsingScoreboard() && currentSession != null) {
-                List<Player> worldPlayers = getPlayersInWorld(getWorld());
-                for (Player p : worldPlayers) {
-                    plugin.getVoteScoreboard().updateRemainingTime(p, remainingSeconds);
+                remainingSeconds--;
+
+                // Debug log to track time
+                if (remainingSeconds % 10 == 0 || remainingSeconds <= 5) {
+                    plugin.getLogger().info("Vote countdown: " + remainingSeconds + " seconds remaining");
+                }
+
+                // Update scoreboards with new time if using scoreboard mode
+                if (plugin.isUsingScoreboard() && currentSession != null) {
+                    List<Player> worldPlayers = getPlayersInWorld(getWorld());
+                    for (Player p : worldPlayers) {
+                        plugin.getVoteScoreboard().updateRemainingTime(p, remainingSeconds);
+                    }
+                }
+
+                if (remainingSeconds <= 0) {
+                    plugin.getLogger().info("Vote countdown reached zero - ending vote");
+
+                    // Cancel task
+                    if (countdownTask != null) {
+                        countdownTask.cancel();
+                        countdownTask = null;
+                    }
+
+                    // Auto end the vote if we reach zero
+                    if (currentSession != null) {
+                        // Run stopVote on the main thread
+                        Bukkit.getScheduler().runTask(plugin, () -> stopVote());
+                    }
                 }
             }
+        };
 
-            if (remainingSeconds <= 0) {
-                if (countdownTask != null) {
-                    countdownTask.cancel();
-                    countdownTask = null;
-                }
-            }
-        }, 20L, 20L); // Run every second
+        // Then schedule the task and store the reference
+        countdownTask = Bukkit.getScheduler().runTaskTimer(plugin, countdownRunnable, 20L, 20L); // Run every second
     }
 
     /**
@@ -660,5 +793,42 @@ public class VoteCommandExecutor implements CommandExecutor {
                 }
             }
         }, 100L, 100L); // Update every 5 seconds (100 ticks)
+    }
+
+    /**
+     * Checks if a vote is currently active.
+     *
+     * @return true if a vote is running, false otherwise
+     */
+    public boolean isVoteActive() {
+        return currentSession != null;
+    }
+
+    /**
+     * Gets the name of the world where the vote is taking place.
+     *
+     * @return The world name or null if no vote is active
+     */
+    public String getVoteWorldName() {
+        return voteWorldName;
+    }
+
+    /**
+     * Shows the current vote scoreboard to a specific player.
+     * Used when players join or change worlds during an active vote.
+     *
+     * @param player The player to show the scoreboard to
+     */
+    public void showScoreboardToPlayer(Player player) {
+        if (currentSession == null || voteOptions == null || !plugin.isUsingScoreboard()) {
+            return;
+        }
+
+        // Create a list with just this player
+        List<Player> singlePlayer = new ArrayList<>();
+        singlePlayer.add(player);
+
+        // Show the scoreboard with current state
+        plugin.getVoteScoreboard().showVoting(voteOptions, currentSession, singlePlayer, remainingSeconds);
     }
 }
