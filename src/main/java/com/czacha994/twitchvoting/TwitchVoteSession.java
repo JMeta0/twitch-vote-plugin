@@ -65,6 +65,11 @@ public class TwitchVoteSession {
                     try {
                         int num = Integer.parseInt(matcher.group());
                         if (num >= 1 && num <= optionCount) {
+                            // In single vote mode, clear previous votes before adding the new one
+                            if (plugin instanceof TwitchVotingPlugin &&
+                                ((TwitchVotingPlugin) plugin).isSingleVoteMode()) {
+                                userVotes.clear();
+                            }
                             userVotes.add(num);
                         }
                     } catch (NumberFormatException ignored) {}

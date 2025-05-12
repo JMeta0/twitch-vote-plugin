@@ -14,6 +14,7 @@ public class TwitchVotingPlugin extends JavaPlugin {
     private VoteCommandExecutor voteExecutor;
     private VoteScoreboard voteScoreboard;
     private boolean useScoreboard = true; // Default value
+    private boolean singleVoteMode = false; // Default value
 
     @Override
     public void onEnable() {
@@ -40,6 +41,9 @@ public class TwitchVotingPlugin extends JavaPlugin {
 
         // Load display mode from config
         useScoreboard = getConfig().getBoolean("display.use_scoreboard", true);
+
+        // Load single vote mode from config
+        singleVoteMode = getConfig().getBoolean("voting.single_vote_mode", false);
 
         // Initialize scoreboard manager
         this.voteScoreboard = new VoteScoreboard(this);
@@ -99,6 +103,25 @@ public class TwitchVotingPlugin extends JavaPlugin {
     }
 
     /**
+     * Get the single vote mode setting
+     * @return true if only counting the last vote from each user, false if counting all votes
+     */
+    public boolean isSingleVoteMode() {
+        return singleVoteMode;
+    }
+
+    /**
+     * Update the single vote mode setting and save to config
+     * @param singleVoteMode true to count only the last vote per user, false to count all votes
+     */
+    public void setSingleVoteMode(boolean singleVoteMode) {
+        this.singleVoteMode = singleVoteMode;
+        getConfig().set("voting.single_vote_mode", singleVoteMode);
+        saveConfig();
+        getLogger().info("Single vote mode set to: " + (singleVoteMode ? "Enabled" : "Disabled"));
+    }
+
+    /**
      * Checks if a command sender is a command block with permissions
      * @param sender The command sender to check
      * @return true if the sender is a command block with voting.commandblock permission
@@ -133,6 +156,10 @@ public class TwitchVotingPlugin extends JavaPlugin {
             getConfig().set("defaults.max_duration", 3600);
         }
 
+        if (!getConfig().isSet("voting.single_vote_mode")) {
+            getConfig().set("voting.single_vote_mode", false);
+        }
+
         // Save any changes made
         saveConfig();
     }
@@ -149,6 +176,7 @@ public class TwitchVotingPlugin extends JavaPlugin {
 
         // Update current settings from reloaded config
         useScoreboard = getConfig().getBoolean("display.use_scoreboard", true);
+        singleVoteMode = getConfig().getBoolean("voting.single_vote_mode", false);
 
         getLogger().info("Configuration reloaded.");
     }

@@ -18,3 +18,8 @@ defaults:
   min_duration: 5
   # Maximum voting time (in seconds)
   max_duration: 3600
+
+# Voting behavior settings
+voting:
+  # When true, only count the last vote from each user. When false, count all votes from each user.
+  single_vote_mode: false

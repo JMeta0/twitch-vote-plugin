@@ -8,7 +8,7 @@ description: Minecraft Paper plugin for Twitch chat voting
 commands:
   vote:
     description: Manage Twitch voting sessions
-    usage: /<command> <start|stop|togglemode|reload|help>
+    usage: /<command> <start|stop|togglemode|togglevote|reload|help>
     permission: voting.manage
     permission-message: §cYou don't have permission to use this command.
 permissions:

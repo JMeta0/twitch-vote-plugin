@@ -59,6 +59,8 @@ public class VoteCommandExecutor implements CommandExecutor {
                 return handleReloadCommand(sender);
             case "togglemode":
                 return handleToggleModeCommand(sender);
+            case "togglevote":
+                return handleToggleVoteCommand(sender);
             case "help":
                 showHelpMessage(sender);
                 return true;
@@ -148,6 +150,10 @@ public class VoteCommandExecutor implements CommandExecutor {
 
                 sendMessageToWorld("§eA vote has started! Use Twitch chat to vote.");
                 sendMessageToWorld("§eVote in Twitch chat: twitch.tv/" + streamer);
+
+                // Inform about current vote mode
+                String voteMode = plugin.isSingleVoteMode() ? "last vote only" : "multiple votes";
+                sendMessageToWorld("§eVote mode: §6" + voteMode);
 
                 // Start timer for countdown on main thread
                 startCountdownTimer();
@@ -240,12 +246,39 @@ public class VoteCommandExecutor implements CommandExecutor {
     }
 
     /**
+     * Handles the /vote togglevote command to switch between single and multiple vote modes.
+     */
+    private boolean handleToggleVoteCommand(CommandSender sender) {
+        if (!sender.hasPermission("voting.manage")) {
+            sender.sendMessage("§cYou do not have permission to toggle vote mode.");
+            return true;
+        }
+
+        boolean newMode = !plugin.isSingleVoteMode();
+        plugin.setSingleVoteMode(newMode);
+
+        String modeDescription = newMode ?
+            "Single vote mode (only last vote counts)" :
+            "Multiple vote mode (all votes count)";
+
+        sender.sendMessage("§aVote mode set to: " + modeDescription);
+
+        // If there's an active vote, let users know about the mode change
+        if (currentSession != null) {
+            sendMessageToWorld("§eVote mode changed to: §6" + modeDescription);
+        }
+
+        return true;
+    }
+
+    /**
      * Displays the help message for the /vote command.
      */
     private void showHelpMessage(CommandSender sender) {
         sender.sendMessage("§e/vote start <seconds> <streamer> <option1> <option2> ...");
         sender.sendMessage("§e/vote stop");
         sender.sendMessage("§e/vote togglemode - Switch between scoreboard and chat display");
+        sender.sendMessage("§e/vote togglevote - Switch between single vote and multiple votes mode");
         sender.sendMessage("§e/vote reload - Reload plugin configuration");
         sender.sendMessage("§e/vote help");
     }
