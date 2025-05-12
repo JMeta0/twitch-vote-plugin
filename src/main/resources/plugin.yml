@@ -1,0 +1,23 @@
+name: TwitchVoting
+main: com.czacha994.twitchvoting.TwitchVotingPlugin
+version: "1.0.0"
+api-version: 1.21
+api: ["1.21"]
+author: czacha994
+description: Minecraft Paper plugin for Twitch chat voting
+commands:
+  vote:
+    description: Manage Twitch voting sessions
+    usage: /<command> <start|stop|togglemode|reload|help>
+    permission: voting.manage
+    permission-message: §cYou don't have permission to use this command.
+permissions:
+  voting.manage:
+    description: Allows managing voting sessions
+    default: op
+  voting.admin:
+    description: Allows administrative actions like reloading the config
+    default: op
+  voting.commandblock:
+    description: Allows command blocks to use voting commands
+    default: op

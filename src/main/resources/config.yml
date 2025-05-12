@@ -1,0 +1,20 @@
+# TwitchVoting Plugin Configuration
+
+# Display settings
+display:
+  # Use scoreboard (true) or chat (false) for vote display
+  use_scoreboard: true
+  # How long to show results after voting ends (in seconds)
+  results_display_time: 60
+  # Visual settings
+  highlight_color: LIGHT_PURPLE
+  winner_color: GOLD
+
+# Default settings for voting sessions
+defaults:
+  # Maximum number of options allowed
+  max_options: 20
+  # Minimum voting time (in seconds)
+  min_duration: 5
+  # Maximum voting time (in seconds)
+  max_duration: 3600
